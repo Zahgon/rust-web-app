@@ -1,32 +1,32 @@
 use crate::error::{Error, Result};
+use crate::utils::cookies::Cookies;
 use crate::utils::token;
-use axum::extract::State;
-use axum::Json;
+use actix_web::web;
 use lib_auth::pwd::{self, ContentToHash, SchemeStatus};
 use lib_core::ctx::Ctx;
 use lib_core::model::user::{UserBmc, UserForLogin};
 use lib_core::model::ModelManager;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tower_cookies::Cookies;
 use tracing::debug;
 
 // region:    --- Login
 pub async fn api_login_handler(
-	State(mm): State<ModelManager>,
+	mm: web::Data<ModelManager>,
 	cookies: Cookies,
-	Json(payload): Json<LoginPayload>,
-) -> Result<Json<Value>> {
+	payload: web::Json<LoginPayload>,
+) -> Result<web::Json<Value>> {
 	debug!("{:<12} - api_login_handler", "HANDLER");
 
 	let LoginPayload {
 		username,
 		pwd: pwd_clear,
-	} = payload;
+	} = payload.into_inner();
+	let mm = mm.get_ref();
 	let root_ctx = Ctx::root_ctx();
 
 	// -- Get the user.
-	let user: UserForLogin = UserBmc::first_by_username(&root_ctx, &mm, &username)
+	let user: UserForLogin = UserBmc::first_by_username(&root_ctx, mm, &username)
 		.await?
 		.ok_or(Error::LoginFailUsernameNotFound)?;
 	let user_id = user.id;
@@ -49,14 +49,14 @@ pub async fn api_login_handler(
 	// -- Update password scheme if needed
 	if let SchemeStatus::Outdated = scheme_status {
 		debug!("pwd encrypt scheme outdated, upgrading.");
-		UserBmc::update_pwd(&root_ctx, &mm, user.id, &pwd_clear).await?;
+		UserBmc::update_pwd(&root_ctx, mm, user.id, &pwd_clear).await?;
 	}
 
 	// -- Set web token.
 	token::set_token_cookie(&cookies, &user.username, user.token_salt)?;
 
 	// Create the success body.
-	let body = Json(json!({
+	let body = web::Json(json!({
 		"result": {
 			"success": true
 		}
@@ -75,8 +75,8 @@ pub struct LoginPayload {
 // region:    --- Logoff
 pub async fn api_logoff_handler(
 	cookies: Cookies,
-	Json(payload): Json<LogoffPayload>,
-) -> Result<Json<Value>> {
+	payload: web::Json<LogoffPayload>,
+) -> Result<web::Json<Value>> {
 	debug!("{:<12} - api_logoff_handler", "HANDLER");
 	let should_logoff = payload.logoff;
 
@@ -85,7 +85,7 @@ pub async fn api_logoff_handler(
 	}
 
 	// Create the success body.
-	let body = Json(json!({
+	let body = web::Json(json!({
 		"result": {
 			"logged_off": should_logoff
 		}

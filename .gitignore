@@ -84,3 +84,4 @@ __pycache__/
 
 # Allow vscode
 # !.vscode # Commented by default
+*extras

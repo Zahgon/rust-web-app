@@ -12,7 +12,7 @@
 //!   CRUD and other data access methods on a given "entity"
 //!   (e.g., `Conv`, `Agent`).
 //!   (`Bmc` is short for Backend Model Controller).
-//! - In frameworks like Axum, Tauri, `ModelManager` are typically used as App State.
+//! - In frameworks like Actix, Tauri, `ModelManager` are typically used as App State.
 //! - ModelManager are designed to be passed as an argument
 //!   to all Model Controllers functions.
 //!

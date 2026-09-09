@@ -1,8 +1,9 @@
 
 pub use crate::error::ClientError;
 pub use crate::error::{Error, Result};
+use crate::utils::cookies::Cookies;
+use actix_web::cookie::Cookie;
 use lib_auth::token::generate_web_token;
-use tower_cookies::{Cookie, Cookies};
 use uuid::Uuid;
 
 // endregion: --- Modules
@@ -22,7 +23,7 @@ pub(crate) fn set_token_cookie(cookies: &Cookies, user: &str, salt: Uuid) -> Res
 }
 
 pub(crate) fn remove_token_cookie(cookies: &Cookies) -> Result<()> {
-	let mut cookie = Cookie::from(AUTH_TOKEN);
+	let mut cookie = Cookie::named(AUTH_TOKEN);
 	cookie.set_path("/");
 
 	cookies.remove(cookie);

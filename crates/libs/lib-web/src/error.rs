@@ -1,13 +1,12 @@
 use crate::middleware;
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use actix_web::http::StatusCode;
+use actix_web::{HttpResponse, ResponseError};
 use derive_more::From;
 use lib_auth::{pwd, token};
 use lib_core::model;
 use serde::Serialize;
 use serde_json::Value;
 use serde_with::{serde_as, DisplayFromStr};
-use std::sync::Arc;
 use tracing::{debug, warn};
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -31,6 +30,7 @@ pub enum Error {
 
 	// -- Extractors
 	ReqStampNotInReqExt,
+	CookiesNotInReqExt,
 
 	// -- Modules
 	#[from]
@@ -107,21 +107,23 @@ impl From<rpc_router::CallError> for Error {
 
 // endregion: --- From rpc-router::Error
 
-// region:    --- Axum IntoResponse
-impl IntoResponse for Error {
-	fn into_response(self) -> Response {
+// region:    --- Actix ResponseError
+
+/// Note: This only creates the placeholder response. The real client response
+///       (status code and JSON body) is built from the error by `mw_res_map`,
+///       which retrieves this error from the response with `HttpResponse::error()`.
+impl ResponseError for Error {
+	fn status_code(&self) -> StatusCode {
+		StatusCode::INTERNAL_SERVER_ERROR
+	}
+
+	fn error_response(&self) -> HttpResponse {
 		debug!("{:<12} - model::Error {self:?}", "INTO_RES");
 
-		// Create a placeholder Axum reponse.
-		let mut response = StatusCode::INTERNAL_SERVER_ERROR.into_response();
-
-		// Insert the Error into the reponse.
-		response.extensions_mut().insert(Arc::new(self));
-
-		response
+		HttpResponse::new(self.status_code())
 	}
 }
-// endregion: --- Axum IntoResponse
+// endregion: --- Actix ResponseError
 
 // region:    --- Error Boilerplate
 impl core::fmt::Display for Error {

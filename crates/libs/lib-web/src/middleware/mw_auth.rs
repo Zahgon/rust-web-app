@@ -1,29 +1,38 @@
 use crate::error::{Error, Result};
+use crate::utils::cookies::Cookies;
 use crate::utils::token::{set_token_cookie, AUTH_TOKEN};
-use axum::body::Body;
-use axum::extract::{FromRequestParts, State};
-use axum::http::request::Parts;
-use axum::http::Request;
-use axum::middleware::Next;
-use axum::response::Response;
+use actix_web::body::{BoxBody, MessageBody};
+use actix_web::cookie::Cookie;
+use actix_web::dev::{Payload, ServiceRequest, ServiceResponse};
+use actix_web::middleware::Next;
+use actix_web::{web, FromRequest, HttpMessage, HttpRequest, HttpResponse};
 use lib_auth::token::{validate_web_token, Token};
 use lib_core::ctx::Ctx;
 use lib_core::model::user::{UserBmc, UserForAuth};
 use lib_core::model::ModelManager;
 use serde::Serialize;
-use tower_cookies::{Cookie, Cookies};
+use std::future::{ready, Ready};
 use tracing::debug;
 
-pub async fn mw_ctx_require(
-	ctx: Result<CtxW>,
-	req: Request<Body>,
-	next: Next,
-) -> Result<Response> {
+pub async fn mw_ctx_require<B>(
+	req: ServiceRequest,
+	next: Next<B>,
+) -> core::result::Result<ServiceResponse<BoxBody>, actix_web::Error>
+where
+	B: MessageBody + 'static,
+{
+	let ctx = ctx_from_req(req.request());
 	debug!("{:<12} - mw_ctx_require - {ctx:?}", "MIDDLEWARE");
 
-	ctx?;
-
-	Ok(next.run(req).await)
+	match ctx {
+		Ok(_) => Ok(next.call(req).await?.map_into_boxed_body()),
+		// Note: The error is attached to the response, so that `mw_res_map`
+		//       can build the client response out of it.
+		Err(ex) => {
+			let (http_req, _payload) = req.into_parts();
+			Ok(ServiceResponse::new(http_req, HttpResponse::from_error(ex)))
+		}
+	}
 }
 
 // IMPORTANT: This resolver must never fail, but rather capture the potential Auth error and put in in the
@@ -31,27 +40,40 @@ pub async fn mw_ctx_require(
 //            This way it won't prevent downstream middleware to be executed, and will still capture the error
 //            for the appropriate middleware (.e.g., mw_ctx_require which forces successful auth) or handler
 //            to get the appropriate information.
-pub async fn mw_ctx_resolver(
-	State(mm): State<ModelManager>,
-	cookies: Cookies,
-	mut req: Request<Body>,
-	next: Next,
-) -> Response {
+pub async fn mw_ctx_resolver<B>(
+	req: ServiceRequest,
+	next: Next<B>,
+) -> core::result::Result<ServiceResponse<B>, actix_web::Error>
+where
+	B: MessageBody,
+{
 	debug!("{:<12} - mw_ctx_resolve", "MIDDLEWARE");
+
+	// Note: The `ModelManager` is registered as application data (see `web::app`).
+	let mm = req
+		.app_data::<web::Data<ModelManager>>()
+		.expect("ModelManager should be registered as app_data")
+		.get_ref()
+		.clone();
+	let cookies = req
+		.extensions()
+		.get::<Cookies>()
+		.cloned()
+		.ok_or(Error::CookiesNotInReqExt)?;
 
 	let ctx_ext_result = ctx_resolve(mm, &cookies).await;
 
 	if ctx_ext_result.is_err()
 		&& !matches!(ctx_ext_result, Err(CtxExtError::TokenNotInCookie))
 	{
-		cookies.remove(Cookie::from(AUTH_TOKEN))
+		cookies.remove(Cookie::named(AUTH_TOKEN))
 	}
 
 	// Store the ctx_ext_result in the request extension
 	// (for Ctx extractor).
 	req.extensions_mut().insert(ctx_ext_result);
 
-	next.run(req).await
+	next.call(req).await
 }
 
 async fn ctx_resolve(mm: ModelManager, cookies: &Cookies) -> CtxExtResult {
@@ -89,18 +111,23 @@ async fn ctx_resolve(mm: ModelManager, cookies: &Cookies) -> CtxExtResult {
 #[derive(Debug, Clone)]
 pub struct CtxW(pub Ctx);
 
-impl<S: Send + Sync> FromRequestParts<S> for CtxW {
-	type Rejection = Error;
+/// Get the `CtxW` resolved by `mw_ctx_resolver` from the request extensions.
+pub fn ctx_from_req(req: &HttpRequest) -> Result<CtxW> {
+	req.extensions()
+		.get::<CtxExtResult>()
+		.ok_or(Error::CtxExt(CtxExtError::CtxNotInRequestExt))?
+		.clone()
+		.map_err(Error::CtxExt)
+}
 
-	async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self> {
+impl FromRequest for CtxW {
+	type Error = Error;
+	type Future = Ready<Result<Self>>;
+
+	fn from_request(req: &HttpRequest, _payload: &mut Payload) -> Self::Future {
 		debug!("{:<12} - Ctx", "EXTRACTOR");
 
-		parts
-			.extensions
-			.get::<CtxExtResult>()
-			.ok_or(Error::CtxExt(CtxExtError::CtxNotInRequestExt))?
-			.clone()
-			.map_err(Error::CtxExt)
+		ready(ctx_from_req(req))
 	}
 }
 // endregion: --- Ctx Extractor
